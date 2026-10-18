@@ -34,6 +34,9 @@ type ReviewStore interface {
 	RecordOwnComment(context.Context, domain.ReviewJob, domain.ReviewFinding, int64) error
 	CapturePrompt(context.Context, int64, domain.ReviewPrompt) error
 }
+type verificationUsageStore interface {
+	SaveVerificationUsage(context.Context, int64, string, int64, int64, int64, int64, int64) error
+}
 type PromptResolver interface {
 	Effective(context.Context, string) (domain.ReviewPrompt, error)
 	Validation(context.Context) (domain.ReviewPrompt, error)
@@ -246,7 +249,15 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 		if verificationModelName == "" {
 			verificationModelName = d.ModelName
 		}
-		costMicroUSD += reviewCostMicroUSD(verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens)
+		verificationCostMicroUSD := reviewCostMicroUSD(verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens)
+		costMicroUSD += verificationCostMicroUSD
+		if attempt > 0 {
+			if usageStore, ok := d.Store.(verificationUsageStore); ok {
+				if verificationErr = usageStore.SaveVerificationUsage(ctx, attempt, verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens, verificationCostMicroUSD); verificationErr != nil {
+					return fail(fmt.Errorf("save verification usage: %w", verificationErr))
+				}
+			}
+		}
 		verifiedFindings, decisions, verificationErr := selectVerifiedFindings(mr.Findings, verified.Findings)
 		if verificationErr != nil {
 			if attempt > 0 {
@@ -390,9 +401,9 @@ var reviewTokenRates = map[string]tokenRatesMicroUSD{
 	"sonnet":    {Input: 2, Output: 10, CacheCreation: 2.5, CacheRead: 0.1},
 	"opus":      {Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.2},
 	"haiku_max": {Input: 0.1, Output: 0.5, CacheCreation: 0.125, CacheRead: 0.01},
-	// Jev billing is not token-priced like the generative models. Do not
-	// misreport its decisions at the Sonnet fallback rate.
-	"jev": {},
+	// TypeSafe lists Jev at $0.042 per million input tokens; output is free.
+	// https://typesafe.ai/
+	"jev": {Input: 0.042},
 }
 
 func reviewCostMicroUSD(model string, input, output, cacheCreation, cacheRead int64) int64 {

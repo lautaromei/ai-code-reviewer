@@ -589,11 +589,16 @@ func (r *ReviewStore) FinishAttempt(ctx context.Context, id int64, result, errTe
 	return e
 }
 
+func (r *ReviewStore) SaveVerificationUsage(ctx context.Context, id int64, model string, input, output, cacheCreation, cacheRead, costMicroUSD int64) error {
+	_, e := r.s.conn().ExecContext(ctx, `UPDATE review_attempts SET verification_model=?,verification_input_tokens=?,verification_output_tokens=?,verification_cache_creation_tokens=?,verification_cache_read_tokens=?,verification_cost_microusd=? WHERE id=?`, model, input, output, cacheCreation, cacheRead, costMicroUSD, id)
+	return e
+}
+
 func (r *ReviewStore) ListReviewHistory(ctx context.Context, limit int) ([]domain.ReviewHistoryEntry, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 100
 	}
-	rows, e := r.s.conn().QueryContext(ctx, `SELECT a.id,r.full_name,j.pull_request_number,a.provider,a.model,a.result,a.error,a.started_at,a.finished_at,a.input_tokens,a.output_tokens,a.cache_creation_tokens,a.cache_read_tokens,a.cost_microusd,COUNT(f.id) FROM review_attempts a JOIN review_jobs j ON j.id=a.job_id JOIN repositories r ON r.id=j.repository_id LEFT JOIN review_findings f ON f.attempt_id=a.id GROUP BY a.id ORDER BY a.id DESC LIMIT ?`, limit)
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT a.id,r.full_name,j.pull_request_number,a.provider,a.model,a.verification_model,a.result,a.error,a.started_at,a.finished_at,a.input_tokens,a.output_tokens,a.cache_creation_tokens,a.cache_read_tokens,a.cost_microusd,a.verification_input_tokens,a.verification_output_tokens,a.verification_cache_creation_tokens,a.verification_cache_read_tokens,a.verification_cost_microusd,COUNT(f.id) FROM review_attempts a JOIN review_jobs j ON j.id=a.job_id JOIN repositories r ON r.id=j.repository_id LEFT JOIN review_findings f ON f.attempt_id=a.id GROUP BY a.id ORDER BY a.id DESC LIMIT ?`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -602,7 +607,7 @@ func (r *ReviewStore) ListReviewHistory(ctx context.Context, limit int) ([]domai
 	for rows.Next() {
 		var x domain.ReviewHistoryEntry
 		var started, finished string
-		if e = rows.Scan(&x.AttemptID, &x.Repository, &x.PullRequestNumber, &x.Provider, &x.Model, &x.Result, &x.Error, &started, &finished, &x.InputTokens, &x.OutputTokens, &x.CacheCreationTokens, &x.CacheReadTokens, &x.CostMicroUSD, &x.FindingCount); e != nil {
+		if e = rows.Scan(&x.AttemptID, &x.Repository, &x.PullRequestNumber, &x.Provider, &x.Model, &x.VerificationModel, &x.Result, &x.Error, &started, &finished, &x.InputTokens, &x.OutputTokens, &x.CacheCreationTokens, &x.CacheReadTokens, &x.CostMicroUSD, &x.VerificationInputTokens, &x.VerificationOutputTokens, &x.VerificationCacheCreationTokens, &x.VerificationCacheReadTokens, &x.VerificationCostMicroUSD, &x.FindingCount); e != nil {
 			return nil, e
 		}
 		x.StartedAt = parseTime(started)
@@ -612,6 +617,72 @@ func (r *ReviewStore) ListReviewHistory(ctx context.Context, limit int) ([]domai
 		out = append(out, x)
 	}
 	return out, rows.Err()
+}
+
+func (r *ReviewStore) ReviewDetail(ctx context.Context, attemptID int64) (domain.ReviewDetail, bool, error) {
+	var out domain.ReviewDetail
+	var started, finished string
+	e := r.s.conn().QueryRowContext(ctx, `SELECT a.id,r.full_name,j.pull_request_number,a.provider,a.model,a.verification_model,a.result,a.error,a.started_at,a.finished_at,a.input_tokens,a.output_tokens,a.cache_creation_tokens,a.cache_read_tokens,a.cost_microusd,a.verification_input_tokens,a.verification_output_tokens,a.verification_cache_creation_tokens,a.verification_cache_read_tokens,a.verification_cost_microusd,(SELECT COUNT(*) FROM review_findings f WHERE f.attempt_id=a.id) FROM review_attempts a JOIN review_jobs j ON j.id=a.job_id JOIN repositories r ON r.id=j.repository_id WHERE a.id=?`, attemptID).Scan(
+		&out.Review.AttemptID, &out.Review.Repository, &out.Review.PullRequestNumber, &out.Review.Provider, &out.Review.Model, &out.Review.VerificationModel, &out.Review.Result, &out.Review.Error, &started, &finished, &out.Review.InputTokens, &out.Review.OutputTokens, &out.Review.CacheCreationTokens, &out.Review.CacheReadTokens, &out.Review.CostMicroUSD, &out.Review.VerificationInputTokens, &out.Review.VerificationOutputTokens, &out.Review.VerificationCacheCreationTokens, &out.Review.VerificationCacheReadTokens, &out.Review.VerificationCostMicroUSD, &out.Review.FindingCount)
+	if errors.Is(e, sql.ErrNoRows) {
+		return out, false, nil
+	}
+	if e != nil {
+		return out, false, e
+	}
+	out.Review.StartedAt = parseTime(started)
+	if t := parseTime(finished); !t.IsZero() {
+		out.Review.FinishedAt = &t
+	}
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT id,attempt_id,rule_id,kind,path,side,line,confidence,severity,body,suggestion,fingerprint,publication_status,github_comment_id FROM review_findings WHERE attempt_id=? ORDER BY id`, attemptID)
+	if e != nil {
+		return out, false, e
+	}
+	for rows.Next() {
+		var x domain.ReviewFinding
+		var ruleID sql.NullString
+		if e = rows.Scan(&x.ID, &x.AttemptID, &ruleID, &x.Kind, &x.Path, &x.Side, &x.Line, &x.Confidence, &x.Severity, &x.Body, &x.Suggestion, &x.Fingerprint, &x.PublicationStatus, &x.GitHubCommentID); e != nil {
+			rows.Close()
+			return out, false, e
+		}
+		if ruleID.Valid {
+			x.RuleID = &ruleID.String
+		}
+		out.Findings = append(out.Findings, x)
+	}
+	if e = rows.Close(); e != nil {
+		return out, false, e
+	}
+
+	rows, e = r.s.conn().QueryContext(ctx, `SELECT candidate_id,verdict,reason,duplicate_of,kind,rule_id,path,line,confidence,severity,body,suggestion FROM review_verification_decisions WHERE attempt_id=? ORDER BY candidate_id`, attemptID)
+	if e != nil {
+		return out, false, e
+	}
+	for rows.Next() {
+		var x domain.VerificationDecision
+		if e = rows.Scan(&x.CandidateID, &x.Verdict, &x.Reason, &x.DuplicateOf, &x.Kind, &x.RuleID, &x.Path, &x.Line, &x.Confidence, &x.Severity, &x.Body, &x.Suggestion); e != nil {
+			rows.Close()
+			return out, false, e
+		}
+		out.Decisions = append(out.Decisions, x)
+	}
+	if e = rows.Close(); e != nil {
+		return out, false, e
+	}
+
+	rows, e = r.s.conn().QueryContext(ctx, `SELECT rule_id,category,title,body,scopes,content_hash FROM review_rule_inputs WHERE attempt_id=? ORDER BY rule_id`, attemptID)
+	if e != nil {
+		return out, false, e
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var x domain.ReviewRuleInput
+		if e = rows.Scan(&x.RuleID, &x.Category, &x.Title, &x.Body, &x.Scopes, &x.ContentHash); e != nil {
+			return out, false, e
+		}
+		out.Rules = append(out.Rules, x)
+	}
+	return out, true, rows.Err()
 }
 
 func (r *ReviewStore) DashboardMetrics(ctx context.Context) (domain.DashboardMetrics, error) {

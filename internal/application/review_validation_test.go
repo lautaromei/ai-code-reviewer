@@ -298,4 +298,7 @@ func TestReviewCostIncludesBothCallsAndCache(t *testing.T) {
 	if longHaiku := reviewCostMicroUSD("haiku_max", 100001, 100, 0, 0); longHaiku != 50251 {
 		t.Fatalf("expected 50251 micro-USD for long-context Haiku Max, got %d", longHaiku)
 	}
+	if jev := reviewCostMicroUSD("jev", 1_000_000, 500_000, 0, 0); jev != 42000 {
+		t.Fatalf("expected 42000 micro-USD for Jev, got %d", jev)
+	}
 }

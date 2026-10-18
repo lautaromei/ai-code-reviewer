@@ -254,7 +254,7 @@ func TestMigrationFailures(t *testing.T) {
 	testigo.Run(t, "skips an already applied migration", func(t *testing.T) {
 		store, mock := mockedDatabase(t)
 		mock.ExpectExec("CREATE TABLE").WillReturnResult(sqlmock.NewResult(0, 0))
-		mock.ExpectQuery("SELECT version").WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1).AddRow(2).AddRow(3).AddRow(4).AddRow(5).AddRow(6).AddRow(7).AddRow(8).AddRow(9).AddRow(10).AddRow(11).AddRow(12).AddRow(13).AddRow(14).AddRow(15))
+		mock.ExpectQuery("SELECT version").WillReturnRows(sqlmock.NewRows([]string{"version"}).AddRow(1).AddRow(2).AddRow(3).AddRow(4).AddRow(5).AddRow(6).AddRow(7).AddRow(8).AddRow(9).AddRow(10).AddRow(11).AddRow(12).AddRow(13).AddRow(14).AddRow(15).AddRow(16))
 		assert.NoError(t, applyMigrations(context.Background(), store.db))
 	})
 }
