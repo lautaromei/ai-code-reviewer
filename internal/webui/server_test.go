@@ -192,6 +192,18 @@ func TestIndexContainsAdministrationTabs(t *testing.T) {
 	}
 }
 
+func TestModelPanelUsesPerAgentSelectorsWithoutRedundantDefault(t *testing.T) {
+	r := httptest.NewRecorder()
+	New(&catalog{}, nil).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := r.Body.String()
+	if strings.Contains(body, "Modelo predeterminado") || strings.Contains(body, `id="global-model"`) {
+		t.Fatalf("model panel still exposes the redundant default selector")
+	}
+	if !strings.Contains(body, "Agentes de generación") || !strings.Contains(body, "Modelo juez") {
+		t.Fatalf("model panel is missing effective model selectors")
+	}
+}
+
 func TestDashboardMetricsAreExposed(t *testing.T) {
 	repos := &repositorySettingsStore{metrics: domain.DashboardMetrics{ReviewsToday: 3, CostTodayMicroUSD: 125000}}
 	r := httptest.NewRecorder()
