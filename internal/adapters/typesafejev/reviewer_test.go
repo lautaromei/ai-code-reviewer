@@ -64,12 +64,13 @@ func TestReviewSendsOnlyEvidenceReferencedByCandidates(t *testing.T) {
 		if len(files) != 1 || files[0].(map[string]any)["path"] != "kept.go" {
 			t.Fatalf("unexpected files sent to Jev: %#v", files)
 		}
-		if len(rules) != 1 || rules[0].(map[string]any)["rule_id"] != "GO-1" {
+		if len(rules) != 2 || rules[0].(map[string]any)["rule_id"] != "GO-1" || rules[1].(map[string]any)["rule_id"] != "GO-2" {
 			t.Fatalf("unexpected rules sent to Jev: %#v", rules)
 		}
 		pullRequest := state["pull_request"].(map[string]any)
-		if _, exists := pullRequest["body"]; exists {
-			t.Fatalf("pull request body should not be duplicated in Jev state: %#v", pullRequest)
+		body, ok := pullRequest["body"].(string)
+		if !ok || !strings.HasSuffix(body, "…") || len([]rune(body)) != 2001 {
+			t.Fatalf("pull request body should be trimmed in Jev state: %#v", pullRequest)
 		}
 		_, _ = w.Write([]byte(`{"model":"jev-1.0","answers":{"candidate_0":{"type":"choice","choice":"accept","confidence":0.9}},"usage":{"input_tokens":10,"output_tokens":1}}`))
 	}))
@@ -77,12 +78,16 @@ func TestReviewSendsOnlyEvidenceReferencedByCandidates(t *testing.T) {
 
 	payload := ports.ReviewPayload{
 		Stage:       "verification",
-		PullRequest: ports.PullRequest{Number: 4, Title: "Change", Body: strings.Repeat("large body", 100)},
+		PullRequest: ports.PullRequest{Number: 4, Title: "Change", Body: strings.Repeat("large body", 300)},
 		ChangedFiles: []ports.ChangedFile{
 			{Path: "kept.go", Patch: "+bug"},
 			{Path: "unrelated.go", Patch: strings.Repeat("+large\n", 1000)},
 		},
-		Rules:             []ports.ReviewRule{{RuleID: "GO-1", Rule: "kept"}, {RuleID: "COMMON-1", Rule: strings.Repeat("large", 1000)}},
+		Rules: []ports.ReviewRule{
+			{RuleID: "GO-1", Rule: "cited", Scopes: []string{"**/*.go"}},
+			{RuleID: "GO-2", Rule: "applicable but not cited", Scopes: []string{"**/*.go"}},
+			{RuleID: "JS-1", Rule: strings.Repeat("large", 1000), Scopes: []string{"**/*.js"}},
+		},
 		CandidateFindings: []ports.ModelFinding{{CandidateID: "candidate-1", RuleID: "GO-1", Path: "kept.go", Body: "bug"}},
 	}
 	if _, err := New("secret", WithBaseURL(server.URL), WithHTTPClient(server.Client())).Review(context.Background(), "policy", payload); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path"
 	"strings"
 	"time"
 
@@ -131,13 +132,9 @@ func (c *Client) Review(ctx context.Context, base string, payload ports.ReviewPa
 
 func compactVerificationState(base string, payload ports.ReviewPayload) map[string]any {
 	paths := make(map[string]bool, len(payload.CandidateFindings))
-	ruleIDs := make(map[string]bool, len(payload.CandidateFindings))
 	for _, candidate := range payload.CandidateFindings {
 		if candidate.Path != "" {
 			paths[candidate.Path] = true
-		}
-		if candidate.RuleID != "" {
-			ruleIDs[candidate.RuleID] = true
 		}
 	}
 	files := make([]ports.ChangedFile, 0, len(paths))
@@ -146,10 +143,18 @@ func compactVerificationState(base string, payload ports.ReviewPayload) map[stri
 			files = append(files, file)
 		}
 	}
-	rules := make([]ports.ReviewRule, 0, len(ruleIDs))
+	type compactRule struct {
+		RuleID    string   `json:"rule_id"`
+		Category  string   `json:"category"`
+		Title     string   `json:"title"`
+		Rule      string   `json:"rule"`
+		Exception string   `json:"exception"`
+		Scopes    []string `json:"scopes"`
+	}
+	rules := make([]compactRule, 0, len(payload.Rules))
 	for _, rule := range payload.Rules {
-		if ruleIDs[rule.RuleID] {
-			rules = append(rules, rule)
+		if ruleAppliesToAnyPath(rule, paths) {
+			rules = append(rules, compactRule{RuleID: rule.RuleID, Category: rule.Category, Title: rule.Title, Rule: rule.Rule, Exception: rule.Exception, Scopes: rule.Scopes})
 		}
 	}
 	return map[string]any{
@@ -157,9 +162,39 @@ func compactVerificationState(base string, payload ports.ReviewPayload) map[stri
 		"pull_request": map[string]any{
 			"number": payload.PullRequest.Number,
 			"title":  payload.PullRequest.Title,
+			"body":   trimRunes(payload.PullRequest.Body, 2000),
 		},
 		"rules":              rules,
 		"changed_files":      files,
 		"candidate_findings": payload.CandidateFindings,
 	}
+}
+
+func ruleAppliesToAnyPath(rule ports.ReviewRule, paths map[string]bool) bool {
+	if len(rule.Scopes) == 0 {
+		return true
+	}
+	for _, rawScope := range rule.Scopes {
+		for _, scope := range strings.Split(rawScope, ",") {
+			scope = strings.Trim(strings.TrimSpace(scope), "`")
+			for candidatePath := range paths {
+				matched, _ := path.Match(scope, candidatePath)
+				if !matched && strings.HasPrefix(scope, "**/") {
+					matched, _ = path.Match(strings.TrimPrefix(scope, "**/"), path.Base(candidatePath))
+				}
+				if matched {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func trimRunes(value string, limit int) string {
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "…"
 }
