@@ -6,12 +6,13 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestBasicLoginProtectsPanelAndAPIs(t *testing.T) {
-	h := WithBasicLogin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := withBasicLogin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-	}), "sfl", "review123")
+	}), "admin", "password", []byte("a-session-secret-with-at-least-32-characters"), time.Now)
 
 	page := httptest.NewRecorder()
 	h.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -27,10 +28,11 @@ func TestBasicLoginProtectsPanelAndAPIs(t *testing.T) {
 }
 
 func TestBasicLoginCreatesLongLivedSecureCookie(t *testing.T) {
-	h := WithBasicLogin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	now := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	h := withBasicLogin(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
-	}), "sfl", "review123")
-	form := url.Values{"username": {"sfl"}, "password": {"review123"}}
+	}), "admin", "password", []byte("a-session-secret-with-at-least-32-characters"), func() time.Time { return now })
+	form := url.Values{"username": {"admin"}, "password": {"password"}}
 	login := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -58,13 +60,43 @@ func TestBasicLoginCreatesLongLivedSecureCookie(t *testing.T) {
 }
 
 func TestBasicLoginRejectsInvalidCredentials(t *testing.T) {
-	h := WithBasicLogin(http.NotFoundHandler(), "sfl", "review123")
-	form := url.Values{"username": {"sfl"}, "password": {"wrong"}}
+	h := withBasicLogin(http.NotFoundHandler(), "admin", "password", []byte("a-session-secret-with-at-least-32-characters"), time.Now)
+	form := url.Values{"username": {"admin"}, "password": {"wrong"}}
 	r := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	h.ServeHTTP(r, req)
 	if r.Code != http.StatusSeeOther || r.Header().Get("Location") != "/login?error=1" || len(r.Result().Cookies()) != 0 {
 		t.Fatalf("status=%d location=%q cookies=%v", r.Code, r.Header().Get("Location"), r.Result().Cookies())
+	}
+}
+
+func TestSessionTokenExpiresAndRejectsTampering(t *testing.T) {
+	secret := []byte("a-session-secret-with-at-least-32-characters")
+	now := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
+	token := sessionToken("admin", now.Add(time.Hour), secret)
+	if !validSessionToken(token, "admin", secret, now) {
+		t.Fatal("fresh token was rejected")
+	}
+	if validSessionToken(token, "admin", secret, now.Add(2*time.Hour)) {
+		t.Fatal("expired token was accepted")
+	}
+	if validSessionToken(token+"x", "admin", secret, now) {
+		t.Fatal("tampered token was accepted")
+	}
+}
+
+func TestAdminLoginRequiresEnvironmentSecrets(t *testing.T) {
+	t.Setenv(adminUsernameEnv, "")
+	t.Setenv(adminPasswordEnv, "")
+	t.Setenv(adminSessionSecretEnv, "")
+	if _, err := WithAdminLoginFromEnvironment(http.NotFoundHandler()); err == nil {
+		t.Fatal("expected missing environment error")
+	}
+	t.Setenv(adminUsernameEnv, "admin")
+	t.Setenv(adminPasswordEnv, "password")
+	t.Setenv(adminSessionSecretEnv, "a-session-secret-with-at-least-32-characters")
+	if _, err := WithAdminLoginFromEnvironment(http.NotFoundHandler()); err != nil {
+		t.Fatalf("unexpected environment error: %v", err)
 	}
 }

@@ -99,7 +99,12 @@ func run(args []string, out, errout io.Writer) int {
 		admin := http.NewServeMux()
 		admin.Handle("/rules/", webhook.RulePages(sqlite.NewRuleCatalog(db)))
 		admin.Handle("/", webui.NewAdminWithInstallations(sqlite.NewRuleCatalog(db), sqlite.NewPromptStore(db), store, installationChecker, installURL))
-		mux.Handle("/", webui.WithBasicLogin(admin, "sfl", "review123"))
+		authenticatedAdmin, authErr := webui.WithAdminLoginFromEnvironment(admin)
+		if authErr != nil {
+			fmt.Fprintln(errout, authErr)
+			return 1
+		}
+		mux.Handle("/", authenticatedAdmin)
 		srv := &http.Server{Addr: cfg.Webhook.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		fmt.Fprintf(out, "webhook listening on %s\n", cfg.Webhook.Listen)
 		if e = srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
