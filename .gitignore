@@ -1,0 +1,25 @@
+# Local and private project files
+/IMPLEMENTATION_PLAN.md
+/scripts/deploy-google.sh
+/.local-private/
+*.md
+!README.md
+
+# Build outputs
+/bin/
+
+# Runtime data and local configuration
+/var/
+/config.yml
+/.env
+/.env.*
+*.db
+*.db-shm
+*.db-wal
+*.pem
+
+# Editor and operating-system files
+.DS_Store
+.idea/
+.vscode/
+*.swp

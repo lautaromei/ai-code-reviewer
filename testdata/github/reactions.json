@@ -1,0 +1,4 @@
+[
+  {"id": 100, "content": "+1", "user": {"login": "alice"}, "created_at": "2024-03-01T10:00:00Z"},
+  {"id": 101, "content": "-1", "user": {"login": "bob"}, "created_at": "2024-03-02T11:00:00Z"}
+]

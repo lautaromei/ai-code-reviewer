@@ -1,0 +1,12 @@
+version: 2
+storage: {driver: sqlite, dsn: var/ai-reviewer.db, busy_timeout: 5s}
+github: {hostname: github.com, auth: app, app_id_env: GITHUB_APP_ID, installation_id_env: GITHUB_APP_INSTALLATION_ID, private_key_path_env: GITHUB_APP_PRIVATE_KEY_PATH, app_slug: ai-code-reviewer, ai_authors: [ai-code-reviewer[bot]]}
+repositories:
+  - {name: example/frontend, review_enabled: true, mining_enabled: true, categories: [JS, CSS, TS]}
+  - {name: example/backend, review_enabled: true, mining_enabled: true, categories: [GO, COMMON, SQL]}
+rules: {prefix: AIR, id_width: 3}
+model: {provider: claude_cli, name: sonnet, timeout: 15m}
+webhook: {listen: "127.0.0.1:8081", public_url: "https://reviewer.example.com", secret_env: GITHUB_WEBHOOK_SECRET}
+review: {workers: 1, comment_language: en, max_comments: 20, max_files: 100, max_file_bytes: 262144, max_context_bytes: 1048576, max_tokens: 128000}
+maintenance: {interval: 14d, min_human_mentions: 3, disable_after_downvotes: 3, include_replies: false}
+web: {listen: "127.0.0.1:8080"}

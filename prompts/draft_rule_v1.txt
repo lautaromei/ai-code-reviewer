@@ -1,0 +1,13 @@
+You draft a code-review rule from the evidence of an already-promoted candidate.
+
+You receive `language` and `evidence`: the comments (`body`, `diff_hunk`, `path`)
+that support this candidate. Draft a concise, verifiable Markdown rule:
+
+- `title`: a short imperative title (for example, "Group imports by origin").
+- `scope`: a glob pattern describing which files the rule applies to (for example, "**/*.go").
+- `body`: 1–3 sentences that an AI reviewer can apply unambiguously to a diff.
+  Do not repeat the title. Do not include status metadata; the system adds it.
+
+Do not generalize beyond what the evidence supports.
+
+Respond only by invoking the `emit_rule_draft` tool.
