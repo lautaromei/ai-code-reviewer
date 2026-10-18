@@ -253,8 +253,8 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 		costMicroUSD += verificationCostMicroUSD
 		if attempt > 0 {
 			if usageStore, ok := d.Store.(verificationUsageStore); ok {
-				if verificationErr = usageStore.SaveVerificationUsage(ctx, attempt, verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens, verificationCostMicroUSD); verificationErr != nil {
-					return fail(fmt.Errorf("save verification usage: %w", verificationErr))
+				if usageErr := usageStore.SaveVerificationUsage(ctx, attempt, verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens, verificationCostMicroUSD); usageErr != nil {
+					slog.WarnContext(ctx, "could not save verification usage", "attempt_id", attempt, "error", usageErr)
 				}
 			}
 		}

@@ -66,6 +66,10 @@ func withBasicLogin(next http.Handler, username, password string, secret []byte,
 			http.Redirect(w, r, "/", http.StatusSeeOther)
 			return
 		case "/logout":
+			if r.Method != http.MethodPost || !sameOrigin(r) {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
 			http.SetCookie(w, sessionCookie(r, "", -1, now()))
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return

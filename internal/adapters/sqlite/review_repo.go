@@ -634,55 +634,74 @@ func (r *ReviewStore) ReviewDetail(ctx context.Context, attemptID int64) (domain
 	if t := parseTime(finished); !t.IsZero() {
 		out.Review.FinishedAt = &t
 	}
-	rows, e := r.s.conn().QueryContext(ctx, `SELECT id,attempt_id,rule_id,kind,path,side,line,confidence,severity,body,suggestion,fingerprint,publication_status,github_comment_id FROM review_findings WHERE attempt_id=? ORDER BY id`, attemptID)
+	out.Findings, e = r.reviewFindings(ctx, attemptID)
 	if e != nil {
 		return out, false, e
 	}
+	out.Decisions, e = r.verificationDecisions(ctx, attemptID)
+	if e != nil {
+		return out, false, e
+	}
+	out.Rules, e = r.reviewRuleInputs(ctx, attemptID)
+	if e != nil {
+		return out, false, e
+	}
+	return out, true, nil
+}
+
+func (r *ReviewStore) reviewFindings(ctx context.Context, attemptID int64) ([]domain.ReviewFinding, error) {
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT id,attempt_id,rule_id,kind,path,side,line,confidence,severity,body,suggestion,fingerprint,publication_status,github_comment_id FROM review_findings WHERE attempt_id=? ORDER BY id`, attemptID)
+	if e != nil {
+		return nil, e
+	}
+	defer rows.Close()
+	var out []domain.ReviewFinding
 	for rows.Next() {
 		var x domain.ReviewFinding
 		var ruleID sql.NullString
 		if e = rows.Scan(&x.ID, &x.AttemptID, &ruleID, &x.Kind, &x.Path, &x.Side, &x.Line, &x.Confidence, &x.Severity, &x.Body, &x.Suggestion, &x.Fingerprint, &x.PublicationStatus, &x.GitHubCommentID); e != nil {
-			rows.Close()
-			return out, false, e
+			return nil, e
 		}
 		if ruleID.Valid {
 			x.RuleID = &ruleID.String
 		}
-		out.Findings = append(out.Findings, x)
+		out = append(out, x)
 	}
-	if e = rows.Close(); e != nil {
-		return out, false, e
-	}
+	return out, rows.Err()
+}
 
-	rows, e = r.s.conn().QueryContext(ctx, `SELECT candidate_id,verdict,reason,duplicate_of,kind,rule_id,path,line,confidence,severity,body,suggestion FROM review_verification_decisions WHERE attempt_id=? ORDER BY candidate_id`, attemptID)
+func (r *ReviewStore) verificationDecisions(ctx context.Context, attemptID int64) ([]domain.VerificationDecision, error) {
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT candidate_id,verdict,reason,duplicate_of,kind,rule_id,path,line,confidence,severity,body,suggestion FROM review_verification_decisions WHERE attempt_id=? ORDER BY candidate_id`, attemptID)
 	if e != nil {
-		return out, false, e
+		return nil, e
 	}
+	defer rows.Close()
+	var out []domain.VerificationDecision
 	for rows.Next() {
 		var x domain.VerificationDecision
 		if e = rows.Scan(&x.CandidateID, &x.Verdict, &x.Reason, &x.DuplicateOf, &x.Kind, &x.RuleID, &x.Path, &x.Line, &x.Confidence, &x.Severity, &x.Body, &x.Suggestion); e != nil {
-			rows.Close()
-			return out, false, e
+			return nil, e
 		}
-		out.Decisions = append(out.Decisions, x)
+		out = append(out, x)
 	}
-	if e = rows.Close(); e != nil {
-		return out, false, e
-	}
+	return out, rows.Err()
+}
 
-	rows, e = r.s.conn().QueryContext(ctx, `SELECT rule_id,category,title,body,scopes,content_hash FROM review_rule_inputs WHERE attempt_id=? ORDER BY rule_id`, attemptID)
+func (r *ReviewStore) reviewRuleInputs(ctx context.Context, attemptID int64) ([]domain.ReviewRuleInput, error) {
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT rule_id,category,title,body,scopes,content_hash FROM review_rule_inputs WHERE attempt_id=? ORDER BY rule_id`, attemptID)
 	if e != nil {
-		return out, false, e
+		return nil, e
 	}
 	defer rows.Close()
+	var out []domain.ReviewRuleInput
 	for rows.Next() {
 		var x domain.ReviewRuleInput
 		if e = rows.Scan(&x.RuleID, &x.Category, &x.Title, &x.Body, &x.Scopes, &x.ContentHash); e != nil {
-			return out, false, e
+			return nil, e
 		}
-		out.Rules = append(out.Rules, x)
+		out = append(out, x)
 	}
-	return out, true, rows.Err()
+	return out, rows.Err()
 }
 
 func (r *ReviewStore) DashboardMetrics(ctx context.Context) (domain.DashboardMetrics, error) {

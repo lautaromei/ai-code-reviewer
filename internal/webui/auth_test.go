@@ -71,6 +71,30 @@ func TestBasicLoginRejectsInvalidCredentials(t *testing.T) {
 	}
 }
 
+func TestLogoutRequiresSameOriginPost(t *testing.T) {
+	h := withBasicLogin(http.NotFoundHandler(), "admin", "password", []byte("a-session-secret-with-at-least-32-characters"), time.Now)
+
+	get := httptest.NewRecorder()
+	h.ServeHTTP(get, httptest.NewRequest(http.MethodGet, "/logout", nil))
+	if get.Code != http.StatusMethodNotAllowed || len(get.Result().Cookies()) != 0 {
+		t.Fatalf("GET logout status=%d cookies=%v", get.Code, get.Result().Cookies())
+	}
+
+	crossOrigin := httptest.NewRecorder()
+	crossOriginRequest := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	crossOriginRequest.Header.Set("Origin", "https://attacker.example")
+	h.ServeHTTP(crossOrigin, crossOriginRequest)
+	if crossOrigin.Code != http.StatusMethodNotAllowed || len(crossOrigin.Result().Cookies()) != 0 {
+		t.Fatalf("cross-origin logout status=%d cookies=%v", crossOrigin.Code, crossOrigin.Result().Cookies())
+	}
+
+	logout := httptest.NewRecorder()
+	h.ServeHTTP(logout, httptest.NewRequest(http.MethodPost, "/logout", nil))
+	if logout.Code != http.StatusSeeOther || logout.Header().Get("Location") != "/login" || len(logout.Result().Cookies()) != 1 || logout.Result().Cookies()[0].MaxAge != -1 {
+		t.Fatalf("logout status=%d location=%q cookies=%v", logout.Code, logout.Header().Get("Location"), logout.Result().Cookies())
+	}
+}
+
 func TestSessionTokenExpiresAndRejectsTampering(t *testing.T) {
 	secret := []byte("a-session-secret-with-at-least-32-characters")
 	now := time.Date(2026, 10, 18, 10, 0, 0, 0, time.UTC)
