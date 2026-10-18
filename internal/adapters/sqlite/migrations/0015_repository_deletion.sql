@@ -1,0 +1,1 @@
+ALTER TABLE repositories ADD COLUMN deleted_at TEXT NOT NULL DEFAULT '';

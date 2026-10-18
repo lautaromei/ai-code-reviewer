@@ -70,7 +70,7 @@ func (r *ReviewStore) EnqueueDelivery(ctx context.Context, id, event, action, re
 			return nil
 		}
 		_, e = tx.conn().ExecContext(ctx, `INSERT INTO review_jobs(repository_id,pull_request_number,initial_head_sha,status,created_at,updated_at)
-			SELECT id,?,?,?,?,? FROM repositories WHERE full_name=?
+			SELECT id,?,?,?,?,? FROM repositories WHERE full_name=? AND deleted_at=''
 			ON CONFLICT(repository_id,pull_request_number) DO UPDATE SET
 			initial_head_sha=excluded.initial_head_sha,status=excluded.status,attempts=0,next_attempt_at='',lease_owner='',lease_until='',last_error='',terminal_reason='',updated_at=excluded.updated_at
 			WHERE review_jobs.status=?`, pr, sha, domain.ReviewQueued, at.Format(time.RFC3339), at.Format(time.RFC3339), repo, domain.ReviewSkipped)
@@ -202,7 +202,7 @@ func (r *ReviewStore) GenerationModels(ctx context.Context, repository string) (
 		return nil, e
 	}
 	var override string
-	e = r.s.conn().QueryRowContext(ctx, `SELECT review_model FROM repositories WHERE full_name=?`, repository).Scan(&override)
+	e = r.s.conn().QueryRowContext(ctx, `SELECT review_model FROM repositories WHERE full_name=? AND deleted_at=''`, repository).Scan(&override)
 	if e != nil {
 		return nil, e
 	}
@@ -227,7 +227,7 @@ func (r *ReviewStore) EffectiveReviewModel(ctx context.Context, repository strin
 }
 
 func (r *ReviewStore) ListRepositorySettings(ctx context.Context) ([]domain.RepositorySettings, error) {
-	rows, e := r.s.conn().QueryContext(ctx, `SELECT id,full_name,review_enabled,mining_enabled,review_model,settings_version,settings_updated_at FROM repositories ORDER BY full_name`)
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT id,full_name,review_enabled,mining_enabled,review_model,settings_version,settings_updated_at FROM repositories WHERE deleted_at='' ORDER BY full_name`)
 	if e != nil {
 		return nil, e
 	}
@@ -262,7 +262,7 @@ func (r *ReviewStore) RepositorySettings(ctx context.Context, name string) (doma
 	var x domain.RepositorySettings
 	var review, mining int
 	var updated string
-	e := r.s.conn().QueryRowContext(ctx, `SELECT id,full_name,review_enabled,mining_enabled,review_model,settings_version,settings_updated_at FROM repositories WHERE full_name=?`, name).Scan(&x.ID, &x.FullName, &review, &mining, &x.ReviewModel, &x.Version, &updated)
+	e := r.s.conn().QueryRowContext(ctx, `SELECT id,full_name,review_enabled,mining_enabled,review_model,settings_version,settings_updated_at FROM repositories WHERE full_name=? AND deleted_at=''`, name).Scan(&x.ID, &x.FullName, &review, &mining, &x.ReviewModel, &x.Version, &updated)
 	if errors.Is(e, sql.ErrNoRows) {
 		return x, false, nil
 	}
@@ -296,11 +296,13 @@ func (r *ReviewStore) RegisterInstallationRepositories(ctx context.Context, inst
 			if e != nil {
 				return e
 			}
-			if _, e = tx.conn().ExecContext(ctx, `UPDATE repositories SET review_enabled=CASE WHEN github_installation_id=0 THEN 1 ELSE review_enabled END,github_installation_id=? WHERE full_name=?`, installationID, name); e != nil {
+			if _, e = tx.conn().ExecContext(ctx, `UPDATE repositories SET review_enabled=CASE WHEN github_installation_id=0 THEN 1 ELSE review_enabled END,github_installation_id=? WHERE full_name=? AND deleted_at=''`, installationID, name); e != nil {
 				return e
 			}
 			var id int64
-			if e = tx.conn().QueryRowContext(ctx, `SELECT id FROM repositories WHERE full_name=?`, name).Scan(&id); e != nil {
+			if e = tx.conn().QueryRowContext(ctx, `SELECT id FROM repositories WHERE full_name=? AND deleted_at=''`, name).Scan(&id); errors.Is(e, sql.ErrNoRows) {
+				continue
+			} else if e != nil {
 				return e
 			}
 			if _, e = tx.conn().ExecContext(ctx, `INSERT INTO repository_categories(repository_id,category) SELECT ?, 'COMMON' WHERE NOT EXISTS(SELECT 1 FROM repository_categories WHERE repository_id=?)`, id, id); e != nil {
@@ -326,7 +328,7 @@ func (r *ReviewStore) UnregisterInstallationRepositories(ctx context.Context, in
 
 func (r *ReviewStore) InstallationID(ctx context.Context, name string) (int64, error) {
 	var id int64
-	e := r.s.conn().QueryRowContext(ctx, `SELECT github_installation_id FROM repositories WHERE full_name=?`, name).Scan(&id)
+	e := r.s.conn().QueryRowContext(ctx, `SELECT github_installation_id FROM repositories WHERE full_name=? AND deleted_at=''`, name).Scan(&id)
 	if e != nil {
 		return 0, e
 	}
@@ -338,7 +340,7 @@ func (r *ReviewStore) InstallationID(ctx context.Context, name string) (int64, e
 
 func (r *ReviewStore) RepositoryInstalled(ctx context.Context, name string) (bool, error) {
 	var id int64
-	e := r.s.conn().QueryRowContext(ctx, `SELECT github_installation_id FROM repositories WHERE full_name=?`, name).Scan(&id)
+	e := r.s.conn().QueryRowContext(ctx, `SELECT github_installation_id FROM repositories WHERE full_name=? AND deleted_at=''`, name).Scan(&id)
 	if errors.Is(e, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -361,7 +363,8 @@ func (r *ReviewStore) SaveRepositorySettings(ctx context.Context, x domain.Repos
 	}
 	e = r.s.withinTx(ctx, func(tx *Database) error {
 		var id, version int64
-		e := tx.conn().QueryRowContext(ctx, `SELECT id,settings_version FROM repositories WHERE full_name=?`, x.FullName).Scan(&id, &version)
+		var deletedAt string
+		e := tx.conn().QueryRowContext(ctx, `SELECT id,settings_version,deleted_at FROM repositories WHERE full_name=?`, x.FullName).Scan(&id, &version, &deletedAt)
 		if errors.Is(e, sql.ErrNoRows) {
 			if expected != 0 {
 				return errors.New("repository version conflict")
@@ -374,6 +377,17 @@ func (r *ReviewStore) SaveRepositorySettings(ctx context.Context, x domain.Repos
 			version = 1
 		} else if e != nil {
 			return e
+		} else if deletedAt != "" {
+			if expected != 0 {
+				return errors.New("repository version conflict")
+			}
+			version++
+			if _, e = tx.conn().ExecContext(ctx, `UPDATE repositories SET review_enabled=?,mining_enabled=?,review_model=?,settings_version=?,settings_updated_at=?,deleted_at='' WHERE id=?`, boolToInt(x.ReviewEnabled), boolToInt(x.MiningEnabled), x.ReviewModel, version, nowRFC3339(), id); e != nil {
+				return e
+			}
+			if _, e = tx.conn().ExecContext(ctx, `DELETE FROM repository_categories WHERE repository_id=?`, id); e != nil {
+				return e
+			}
 		} else {
 			if version != expected {
 				return errors.New("repository version conflict")
@@ -404,6 +418,33 @@ func (r *ReviewStore) SaveRepositorySettings(ctx context.Context, x domain.Repos
 	}
 	out, _, e := r.RepositorySettings(ctx, x.FullName)
 	return out, e
+}
+
+func (r *ReviewStore) DeleteRepository(ctx context.Context, name string, expected int64) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("repository name is required")
+	}
+	now := nowRFC3339()
+	res, err := r.s.conn().ExecContext(ctx, `UPDATE repositories SET review_enabled=0,mining_enabled=0,github_installation_id=0,settings_version=settings_version+1,settings_updated_at=?,deleted_at=? WHERE full_name=? AND deleted_at='' AND settings_version=?`, now, now, name, expected)
+	if err != nil {
+		return fmt.Errorf("delete repository %q: %w", name, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	var exists int
+	if err = r.s.conn().QueryRowContext(ctx, `SELECT count(*) FROM repositories WHERE full_name=? AND deleted_at=''`, name).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return errors.New("repository not found")
+	}
+	return errors.New("repository version conflict")
 }
 
 func normalizeReviewModel(model string, allowEmpty bool) (string, error) {
@@ -480,7 +521,7 @@ func normalizedCategories(in []string) []string {
 func (r *ReviewStore) CreateJob(ctx context.Context, repo string, pr int64, sha string) (domain.ReviewJob, bool, error) {
 	var out domain.ReviewJob
 	now := nowRFC3339()
-	res, e := r.s.conn().ExecContext(ctx, `INSERT OR IGNORE INTO review_jobs(repository_id,pull_request_number,initial_head_sha,status,created_at,updated_at) SELECT id,?,?,?, ?,? FROM repositories WHERE full_name=?`, pr, sha, domain.ReviewQueued, now, now, repo)
+	res, e := r.s.conn().ExecContext(ctx, `INSERT OR IGNORE INTO review_jobs(repository_id,pull_request_number,initial_head_sha,status,created_at,updated_at) SELECT id,?,?,?, ?,? FROM repositories WHERE full_name=? AND deleted_at=''`, pr, sha, domain.ReviewQueued, now, now, repo)
 	if e != nil {
 		return out, false, e
 	}
@@ -629,7 +670,7 @@ func (r *ReviewStore) DashboardMetrics(ctx context.Context) (domain.DashboardMet
 	return out, nil
 }
 func (r *ReviewStore) Rules(ctx context.Context, repo string) ([]ports.ReviewRule, error) {
-	rows, e := r.s.conn().QueryContext(ctx, `SELECT ru.rule_id,ru.language,ru.title,ru.body,ru.scope,ru.content_hash,ru.rule_text,ru.exception_text,ru.bad_example,ru.good_example FROM rules ru JOIN repositories rp ON rp.full_name=? JOIN repository_categories rc ON rc.repository_id=rp.id AND rc.category=upper(ru.language) WHERE ru.status='active' AND (NOT EXISTS(SELECT 1 FROM rule_repository_restrictions x WHERE x.rule_id=ru.rule_id) OR EXISTS(SELECT 1 FROM rule_repository_restrictions x WHERE x.rule_id=ru.rule_id AND x.repository_id=rp.id)) ORDER BY ru.rule_id`, repo)
+	rows, e := r.s.conn().QueryContext(ctx, `SELECT ru.rule_id,ru.language,ru.title,ru.body,ru.scope,ru.content_hash,ru.rule_text,ru.exception_text,ru.bad_example,ru.good_example FROM rules ru JOIN repositories rp ON rp.full_name=? AND rp.deleted_at='' JOIN repository_categories rc ON rc.repository_id=rp.id AND rc.category=upper(ru.language) WHERE ru.status='active' AND (NOT EXISTS(SELECT 1 FROM rule_repository_restrictions x WHERE x.rule_id=ru.rule_id) OR EXISTS(SELECT 1 FROM rule_repository_restrictions x WHERE x.rule_id=ru.rule_id AND x.repository_id=rp.id)) ORDER BY ru.rule_id`, repo)
 	if e != nil {
 		return nil, e
 	}

@@ -58,6 +58,57 @@ func TestRepositorySettingsRejectStaleVersion(t *testing.T) {
 	}
 }
 
+func TestDeletedRepositoryStaysHiddenUntilManuallyAddedAgain(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, "file:repository-deletion?mode=memory&cache=shared", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := NewReviewStore(db)
+	seed := []domain.RepositorySettings{{FullName: "acme/api", ReviewEnabled: true, Categories: []string{"GO"}}}
+	if err = store.SeedRepositorySettings(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := store.RepositorySettings(ctx, "acme/api")
+	if err != nil || !ok {
+		t.Fatalf("settings ok=%v err=%v", ok, err)
+	}
+	if err = store.DeleteRepository(ctx, current.FullName, current.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err = store.RepositorySettings(ctx, "acme/api"); err != nil || ok {
+		t.Fatalf("deleted repository visible: ok=%v err=%v", ok, err)
+	}
+	if err = store.SeedRepositorySettings(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+	if repositories, err := store.ListRepositorySettings(ctx); err != nil || len(repositories) != 0 {
+		t.Fatalf("seed restored deleted repository: repositories=%v err=%v", repositories, err)
+	}
+	restored, err := store.SaveRepositorySettings(ctx, seed[0], 0, "admin")
+	if err != nil || restored.FullName != "acme/api" || !restored.ReviewEnabled {
+		t.Fatalf("manual restore failed: settings=%+v err=%v", restored, err)
+	}
+}
+
+func TestDeleteRepositoryRejectsStaleVersion(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(ctx, "file:repository-delete-conflict?mode=memory&cache=shared", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := NewReviewStore(db)
+	created, err := store.SaveRepositorySettings(ctx, domain.RepositorySettings{FullName: "acme/api", ReviewEnabled: true, Categories: []string{"GO"}}, 0, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DeleteRepository(ctx, created.FullName, created.Version+1); err == nil {
+		t.Fatal("expected version conflict")
+	}
+}
+
 func TestGitHubInstallationOnboardsAndDisablesRepository(t *testing.T) {
 	ctx := context.Background()
 	db, err := Open(ctx, "file:installation-onboarding?mode=memory&cache=shared", time.Second)

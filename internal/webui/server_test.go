@@ -13,6 +13,7 @@ import (
 type repositorySettingsStore struct {
 	items   []domain.RepositorySettings
 	metrics domain.DashboardMetrics
+	deleted string
 }
 type installationChecker struct{ installed map[string]bool }
 
@@ -42,6 +43,10 @@ func (s *repositorySettingsStore) SaveRepositorySettings(_ context.Context, x do
 	x.Version = expected + 1
 	s.items = []domain.RepositorySettings{x}
 	return x, nil
+}
+func (s *repositorySettingsStore) DeleteRepository(_ context.Context, name string, _ int64) error {
+	s.deleted = name
+	return nil
 }
 
 type catalog struct {
@@ -124,6 +129,17 @@ func TestRepositorySettingsCanBeSavedFromWeb(t *testing.T) {
 	var got domain.RepositorySettings
 	if err := json.NewDecoder(r.Body).Decode(&got); err != nil || got.Version != 1 {
 		t.Fatalf("response=%s err=%v", r.Body.String(), err)
+	}
+}
+
+func TestRepositoryCanBeDeletedFromWeb(t *testing.T) {
+	repos := &repositorySettingsStore{}
+	r := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodDelete, "/api/repositories", strings.NewReader(`{"name":"acme/api","expected_version":3}`))
+	req.Header.Set("Content-Type", "application/json")
+	NewAdmin(&catalog{}, nil, repos).ServeHTTP(r, req)
+	if r.Code != http.StatusNoContent || repos.deleted != "acme/api" {
+		t.Fatalf("status=%d deleted=%q response=%s", r.Code, repos.deleted, r.Body.String())
 	}
 }
 

@@ -37,6 +37,7 @@ type promptStore interface {
 type repositoryStore interface {
 	ListRepositorySettings(context.Context) ([]domain.RepositorySettings, error)
 	SaveRepositorySettings(context.Context, domain.RepositorySettings, int64, string) (domain.RepositorySettings, error)
+	DeleteRepository(context.Context, string, int64) error
 	ReviewModelSettings(context.Context) (domain.ReviewModelSettings, error)
 	SaveGlobalReviewModels(context.Context, string, string, []string, int64, string) (domain.ReviewModelSettings, error)
 	ListReviewHistory(context.Context, int) ([]domain.ReviewHistoryEntry, error)
@@ -209,6 +210,32 @@ func (s *server) repositoriesAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, 200, x)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if !sameOrigin(r) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "cross-origin mutation rejected"})
+			return
+		}
+		var x struct {
+			Name            string `json:"name"`
+			ExpectedVersion int64  `json:"expected_version"`
+		}
+		if e := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&x); e != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": e.Error()})
+			return
+		}
+		if e := s.repositories.DeleteRepository(r.Context(), x.Name, x.ExpectedVersion); e != nil {
+			code := http.StatusBadRequest
+			if strings.Contains(e.Error(), "not found") {
+				code = http.StatusNotFound
+			} else if strings.Contains(e.Error(), "conflict") {
+				code = http.StatusConflict
+			}
+			writeJSON(w, code, map[string]string{"error": e.Error()})
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	if r.Method != http.MethodPost {
