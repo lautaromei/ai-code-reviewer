@@ -7,6 +7,6 @@ repositories:
 rules: {prefix: AIR, id_width: 3}
 model: {provider: claude_cli, name: sonnet, timeout: 15m}
 webhook: {listen: "127.0.0.1:8081", public_url: "https://reviewer.example.com", secret_env: GITHUB_WEBHOOK_SECRET}
-review: {workers: 1, comment_language: en, max_comments: 20, max_files: 100, max_file_bytes: 262144, max_context_bytes: 1048576, max_tokens: 128000}
+review: {workers: 1, comment_language: en, max_comments: 20, max_files: 100, max_file_bytes: 262144, max_context_bytes: 1048576, max_source_context_bytes: 16384, max_tokens: 128000}
 maintenance: {interval: 14d, min_human_mentions: 3, disable_after_downvotes: 3, include_replies: false}
 web: {listen: "127.0.0.1:8080"}

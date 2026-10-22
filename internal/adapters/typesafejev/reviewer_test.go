@@ -94,3 +94,27 @@ func TestReviewSendsOnlyEvidenceReferencedByCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestCompactVerificationRetainsRelatedEvidenceWithoutUnrelatedFiles(t *testing.T) {
+	payload := ports.ReviewPayload{
+		ReviewPolicy:      "repository policy",
+		ChangedFiles:      []ports.ChangedFile{{Path: "service.go"}, {Path: "handler.go"}, {Path: "unrelated.go"}},
+		CandidateFindings: []ports.ModelFinding{{CandidateID: "candidate-1", Path: "service.go"}},
+		ContextFiles: []ports.ContextFile{
+			{Path: "service.go", Revision: "HEAD", Content: "1: func ExecuteTask() {}"},
+			{Path: "handler.go", Revision: "HEAD", Content: "1: ExecuteTask()", RelatedTo: []string{"service.go"}},
+			{Path: "helpers.go", Revision: "HEAD", Content: "1: validate()", RelatedTo: []string{"service.go"}},
+			{Path: "old_service.go", Revision: "BASE", Content: "1: old guard", RelatedTo: []string{"service.go"}},
+			{Path: "unrelated.go", Revision: "HEAD", Content: "large unrelated code", RelatedTo: []string{"handler.go"}},
+		},
+	}
+	state := compactVerificationState("judge policy", payload)
+	files := state["changed_files"].([]ports.ChangedFile)
+	contextFiles := state["context_files"].([]ports.ContextFile)
+	if len(files) != 2 || files[1].Path != "handler.go" || len(contextFiles) != 4 {
+		t.Fatalf("lost related evidence or expanded transitively: %#v", state)
+	}
+	if state["review_policy"] != "repository policy" || state["verification_policy"] != "judge policy" {
+		t.Fatal("repository review policy was lost")
+	}
+}

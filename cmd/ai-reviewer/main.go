@@ -161,7 +161,7 @@ func run(args []string, out, errout io.Writer) int {
 	if cfg.GitHub.Auth == "app" {
 		deps.Checks = gh
 	}
-	res, e := application.ReviewPullRequest(ctx, deps, application.ReviewOptions{Repository: *repo, PullRequest: *pr, DryRun: *dry, RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes})
+	res, e := application.ReviewPullRequest(ctx, deps, application.ReviewOptions{Repository: *repo, PullRequest: *pr, DryRun: *dry, RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes, MaxSourceContextBytes: cfg.Review.MaxSourceContextBytes})
 	_ = json.NewEncoder(out).Encode(res)
 	if e != nil {
 		fmt.Fprintln(errout, e)
@@ -222,7 +222,7 @@ func reviewWorker(ctx context.Context, owner string, store *sqlite.ReviewStore, 
 						jobDeps.GenerationModels, e = buildGenerationModels(cfg, generationModelNames)
 					}
 					if e == nil {
-						_, e = application.ProcessReviewJob(ctx, jobDeps, application.ReviewOptions{RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes}, job)
+						_, e = application.ProcessReviewJob(ctx, jobDeps, application.ReviewOptions{RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes, MaxSourceContextBytes: cfg.Review.MaxSourceContextBytes}, job)
 					}
 				}
 			}

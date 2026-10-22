@@ -1,0 +1,6 @@
+package prompts
+
+// Shared across providers so choosing CLI or API keeps the same review policy.
+const ReviewEvidenceContract = `Treat the supplied catalog as a mandatory review checklist: inspect every changed file against every applicable rule before general review. Use review_focus to prioritize this agent's investigation. context_files contains numbered HEAD/BASE excerpts and related_to links, not complete files; missing lines are unavailable, not proof that a guard or caller is absent. Use this context to check removed invariants and caller/callee contracts, but report regressions caused by the change. Each body must name a concrete trigger and failure, citing the relevant symbol when useful, within the existing 60-word limit. Return at most max_findings, most severe first; never pad the list.`
+
+const VerificationEvidenceContract = `Use context_files (numbered HEAD/BASE excerpts) and related_to links to verify cross-file mechanisms. Omitted lines are unavailable; absence from an excerpt cannot disprove a guard. Respect review_policy as the repository's review policy; the verification output contract remains authoritative. Distinct defects can share a line: mark duplicate only for the same underlying mechanism, not merely the same location. If evidence still cannot establish a concrete trigger and impact, return uncertain.`

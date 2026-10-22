@@ -26,6 +26,18 @@ func writeConfig(t *testing.T, text string) string {
 	}
 	return p
 }
+
+func TestSourceContextBudgetDefaultsAndCanBeDisabled(t *testing.T) {
+	for _, test := range []struct {
+		yaml string
+		want int
+	}{{"", 16384}, {"review: {max_source_context_bytes: -1}\n", -1}, {"review: {max_source_context_bytes: 4096}\n", 4096}} {
+		c, err := Load(writeConfig(t, validV2+test.yaml))
+		if err != nil || c.Review.MaxSourceContextBytes != test.want {
+			t.Fatalf("source context budget: got %#v, %v; want %d", c, err, test.want)
+		}
+	}
+}
 func TestLoadV2(t *testing.T) {
 	c, e := Load(writeConfig(t, validV2))
 	if e != nil {
