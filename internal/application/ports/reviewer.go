@@ -12,12 +12,13 @@ type PullRequest struct {
 	Draft   bool   `json:"draft"`
 }
 type ChangedFile struct {
-	Path      string `json:"path"`
-	Status    string `json:"status"`
-	Patch     string `json:"patch"`
-	Additions int    `json:"additions"`
-	Deletions int    `json:"deletions"`
-	Truncated bool   `json:"truncated"`
+	Path         string `json:"path"`
+	PreviousPath string `json:"previous_path,omitempty"`
+	Status       string `json:"status"`
+	Patch        string `json:"patch"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	Truncated    bool   `json:"truncated"`
 }
 type ExistingReviewComment struct {
 	ID         int64
@@ -47,6 +48,19 @@ type PullRequestGateway interface {
 	PublishReviewComment(context.Context, string, int64, string, ReviewPublishRequest) (PublishedComment, error)
 	PublishIssueComment(context.Context, string, int64, string) (PublishedComment, error)
 }
+
+// ReviewContextGateway optionally supplies adjacent source paths without
+// checking out or executing the reviewed repository.
+type ReviewContextGateway interface {
+	ListDirectoryAtSHA(context.Context, string, string, string) ([]string, error)
+}
+
+type ContextFile struct {
+	Path      string   `json:"path"`
+	Revision  string   `json:"revision"` // HEAD or BASE; content uses original line numbers.
+	Content   string   `json:"content"`
+	RelatedTo []string `json:"related_to,omitempty"`
+}
 type ReviewRule struct {
 	RuleID      string   `json:"rule_id"`
 	Category    string   `json:"category"`
@@ -62,16 +76,18 @@ type ReviewRule struct {
 	ContentHash string   `json:"content_hash"`
 }
 type ReviewPayload struct {
-	Repository         string            `json:"repository"`
-	PullRequest        PullRequest       `json:"pull_request"`
-	SelectedCategories []string          `json:"selected_categories"`
-	Rules              []ReviewRule      `json:"rules"`
-	ChangedFiles       []ChangedFile     `json:"changed_files"`
-	ContextFiles       map[string]string `json:"context_files"`
-	Limitations        []string          `json:"limitations"`
-	MaxFindings        int               `json:"max_findings"`
-	Stage              string            `json:"stage"`
-	CandidateFindings  []ModelFinding    `json:"candidate_findings,omitempty"`
+	Repository         string         `json:"repository"`
+	PullRequest        PullRequest    `json:"pull_request"`
+	SelectedCategories []string       `json:"selected_categories"`
+	Rules              []ReviewRule   `json:"rules"`
+	ChangedFiles       []ChangedFile  `json:"changed_files"`
+	ContextFiles       []ContextFile  `json:"context_files,omitempty"`
+	ReviewFocus        string         `json:"review_focus,omitempty"`
+	ReviewPolicy       string         `json:"review_policy,omitempty"`
+	Limitations        []string       `json:"limitations"`
+	MaxFindings        int            `json:"max_findings"`
+	Stage              string         `json:"stage"`
+	CandidateFindings  []ModelFinding `json:"candidate_findings,omitempty"`
 }
 type ModelFinding struct {
 	CandidateID string `json:"candidate_id,omitempty"`

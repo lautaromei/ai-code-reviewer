@@ -109,17 +109,33 @@ func TestValidateFindingsDowngradesUncommentableLine(t *testing.T) {
 	}
 }
 
-func TestValidateFindingsKeepsOneThreadPerLocation(t *testing.T) {
+func TestValidateFindingsKeepsDistinctDefectsAtSameLocation(t *testing.T) {
 	rules := []ports.ReviewRule{{RuleID: "AIR-GO-001", Scopes: []string{"**/*.go"}}}
 	files := []ports.ChangedFile{{Path: "main.go", Patch: "@@ -1,1 +1,1 @@\n+first"}}
 	input := []ports.ModelFinding{
 		{Kind: "catalog_rule", RuleID: "AIR-GO-001", Path: "main.go", Line: 1, Confidence: 90, Body: "primary issue"},
-		{Kind: "general", Path: "main.go", Line: 1, Confidence: 80, Body: "same location"},
+		{Kind: "general", Path: "main.go", Line: 1, Confidence: 80, Body: "independent defect on the same line"},
+		{Kind: "general", Path: "main.go", Line: 1, Confidence: 80, Body: "independent defect on the same line"},
 	}
 
 	got, rejected := validateFindings(input, rules, files, 20)
-	if len(got) != 1 || len(rejected) != 1 {
-		t.Fatalf("expected one review thread, got %#v and %v", got, rejected)
+	if len(got) != 2 || len(rejected) != 0 {
+		t.Fatalf("expected distinct defects without the exact duplicate, got %#v and %v", got, rejected)
+	}
+}
+
+func TestValidateFindingsRanksAcrossAgentsBeforeCommentLimit(t *testing.T) {
+	input := []ports.ModelFinding{
+		{CandidateID: "early-low", Kind: "general", Confidence: 99, Severity: "low", Body: "minor problem"},
+		{CandidateID: "later-high", Kind: "general", Confidence: 80, Severity: "high", Body: "production failure"},
+		{CandidateID: "invalid-high", Kind: "unknown", Confidence: 100, Severity: "high", Body: "invalid"},
+	}
+	got, _ := validateFindings(input, nil, nil, 1)
+	if len(got) != 1 || got[0].CandidateID != "later-high" {
+		t.Fatalf("expected the valid severe finding regardless of agent order: %#v", got)
+	}
+	if input[0].CandidateID != "early-low" {
+		t.Fatal("validation mutated model output")
 	}
 }
 
@@ -297,5 +313,8 @@ func TestReviewCostIncludesBothCallsAndCache(t *testing.T) {
 	}
 	if longHaiku := reviewCostMicroUSD("haiku_max", 100001, 100, 0, 0); longHaiku != 50251 {
 		t.Fatalf("expected 50251 micro-USD for long-context Haiku Max, got %d", longHaiku)
+	}
+	if jev := reviewCostMicroUSD("jev", 1_000_000, 500_000, 0, 0); jev != 42000 {
+		t.Fatalf("expected 42000 micro-USD for Jev, got %d", jev)
 	}
 }

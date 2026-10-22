@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ type repositoryStore interface {
 	ReviewModelSettings(context.Context) (domain.ReviewModelSettings, error)
 	SaveGlobalReviewModels(context.Context, string, string, []string, int64, string) (domain.ReviewModelSettings, error)
 	ListReviewHistory(context.Context, int) ([]domain.ReviewHistoryEntry, error)
+	ReviewDetail(context.Context, int64) (domain.ReviewDetail, bool, error)
 	DashboardMetrics(context.Context) (domain.DashboardMetrics, error)
 	AvailableCategories(context.Context) ([]string, error)
 }
@@ -73,9 +75,36 @@ func NewAdminWithInstallations(rules ruleCatalog, prompts promptStore, repositor
 	mux.HandleFunc("/api/repositories/installations", s.repositoryInstallationsAPI)
 	mux.HandleFunc("/api/models", s.modelsAPI)
 	mux.HandleFunc("/api/reviews", s.reviewsAPI)
+	mux.HandleFunc("/api/reviews/", s.reviewDetailAPI)
 	mux.HandleFunc("/api/dashboard", s.dashboardAPI)
 	mux.HandleFunc("/api/categories", s.categoriesAPI)
 	return mux
+}
+
+func (s *server) reviewDetailAPI(w http.ResponseWriter, r *http.Request) {
+	if s.repositories == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(r.URL.Path, "/api/reviews/"), 10, 64)
+	if err != nil || id <= 0 {
+		http.NotFound(w, r)
+		return
+	}
+	x, found, err := s.repositories.ReviewDetail(r.Context(), id)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	if !found {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, x)
 }
 
 func (s *server) dashboardAPI(w http.ResponseWriter, r *http.Request) {
@@ -390,7 +419,7 @@ type ruleDTO struct {
 }
 
 func (s *server) index(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/reviews/") {
 		http.NotFound(w, r)
 		return
 	}

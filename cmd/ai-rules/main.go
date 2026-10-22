@@ -75,7 +75,11 @@ func run(args []string, out, errout io.Writer) int {
 		fmt.Fprintln(out, "database schema is current")
 		return 0
 	case "serve":
-		h := webui.NewAdmin(sqlite.NewRuleCatalog(db), sqlite.NewPromptStore(db), store)
+		h, authErr := webui.WithAdminLoginFromEnvironment(webui.NewAdmin(sqlite.NewRuleCatalog(db), sqlite.NewPromptStore(db), store))
+		if authErr != nil {
+			fmt.Fprintln(errout, authErr)
+			return 1
+		}
 		srv := &http.Server{Addr: cfg.Web.Listen, Handler: h, ReadHeaderTimeout: 5 * time.Second}
 		fmt.Fprintf(out, "AI Rules UI available at http://%s\n", cfg.Web.Listen)
 		if e = srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {

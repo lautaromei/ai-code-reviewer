@@ -104,13 +104,14 @@ type Webhook struct {
 	MaxBodyBytes int64  `yaml:"max_body_bytes"`
 }
 type Review struct {
-	Workers         int    `yaml:"workers"`
-	CommentLanguage string `yaml:"comment_language"`
-	MaxComments     int    `yaml:"max_comments"`
-	MaxFiles        int    `yaml:"max_files"`
-	MaxFileBytes    int    `yaml:"max_file_bytes"`
-	MaxContextBytes int    `yaml:"max_context_bytes"`
-	MaxTokens       int    `yaml:"max_tokens"`
+	Workers               int    `yaml:"workers"`
+	CommentLanguage       string `yaml:"comment_language"`
+	MaxComments           int    `yaml:"max_comments"`
+	MaxFiles              int    `yaml:"max_files"`
+	MaxFileBytes          int    `yaml:"max_file_bytes"`
+	MaxContextBytes       int    `yaml:"max_context_bytes"`
+	MaxSourceContextBytes int    `yaml:"max_source_context_bytes"`
+	MaxTokens             int    `yaml:"max_tokens"`
 }
 type Maintenance struct {
 	Interval              time.Duration `yaml:"-"`
@@ -325,6 +326,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Review.MaxContextBytes == 0 {
 		c.Review.MaxContextBytes = 1 << 20
+	}
+	if c.Review.MaxSourceContextBytes == 0 {
+		c.Review.MaxSourceContextBytes = 16 << 10
 	}
 	if c.Review.MaxTokens == 0 {
 		c.Review.MaxTokens = 128000

@@ -40,14 +40,37 @@ func (g *GitHub) ListChangedFiles(ctx context.Context, repo string, n int64) ([]
 	for _, r := range raw {
 		var x struct {
 			Filename, Status, Patch string
+			PreviousFilename        string `json:"previous_filename"`
 			Additions, Deletions    int
 		}
 		if e = json.Unmarshal(r, &x); e != nil {
 			return nil, e
 		}
-		out = append(out, ports.ChangedFile{Path: x.Filename, Status: x.Status, Patch: x.Patch, Additions: x.Additions, Deletions: x.Deletions, Truncated: x.Patch == "" && x.Status != "removed"})
+		out = append(out, ports.ChangedFile{Path: x.Filename, PreviousPath: x.PreviousFilename, Status: x.Status, Patch: x.Patch, Additions: x.Additions, Deletions: x.Deletions, Truncated: x.Patch == "" && x.Status != "removed"})
 	}
 	return out, nil
+}
+
+func (g *GitHub) ListDirectoryAtSHA(ctx context.Context, repo, directory, sha string) ([]string, error) {
+	endpoint := fmt.Sprintf("repos/%s/contents", repo)
+	if directory != "" {
+		endpoint += "/" + url.PathEscape(directory)
+	}
+	b, err := g.apiGet(ctx, endpoint+"?ref="+url.QueryEscape(sha))
+	if err != nil {
+		return nil, err
+	}
+	var entries []struct{ Path, Type string }
+	if err := json.Unmarshal(b, &entries); err != nil {
+		return nil, err
+	}
+	var paths []string
+	for _, entry := range entries {
+		if entry.Type == "file" {
+			paths = append(paths, entry.Path)
+		}
+	}
+	return paths, nil
 }
 func (g *GitHub) ReadFileAtSHA(ctx context.Context, repo, path, sha string) ([]byte, error) {
 	b, e := g.apiGet(ctx, fmt.Sprintf("repos/%s/contents/%s?ref=%s", repo, url.PathEscape(path), url.QueryEscape(sha)))

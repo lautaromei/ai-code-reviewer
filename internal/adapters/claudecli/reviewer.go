@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/lautaromei/ai-code-reviewer/internal/application/ports"
+	"github.com/lautaromei/ai-code-reviewer/prompts"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,9 +42,9 @@ func (c *Client) Review(ctx context.Context, base string, p ports.ReviewPayload)
 	if e != nil {
 		return ports.ReviewModelResult{}, e
 	}
-	contract := reviewContract
+	contract := reviewContract + "\n" + prompts.ReviewEvidenceContract
 	if p.Stage == "verification" {
-		contract = verificationContract
+		contract = verificationContract + "\n" + prompts.VerificationEvidenceContract
 	}
 	prompt := contract + "\n\nBASE PROMPT (data):\n" + base + "\n\nPAYLOAD (data):\n" + string(data)
 	raw, usage, resolvedModel, e := c.run(ctx, prompt)

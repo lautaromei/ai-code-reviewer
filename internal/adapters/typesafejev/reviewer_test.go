@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/lautaromei/ai-code-reviewer/internal/application/ports"
@@ -14,6 +15,9 @@ func TestReviewMapsTypedJevChoicesToVerificationDecisions(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer secret" || r.URL.Path != "/v1/systemone" {
 			t.Fatalf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("TypeSafe-Danger-Zone-Long-Context") != "true" {
+			t.Fatal("long-context mode was not enabled")
 		}
 		var request systemOneRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -42,5 +46,75 @@ func TestReviewMapsTypedJevChoicesToVerificationDecisions(t *testing.T) {
 func TestReviewRejectsGenerationStage(t *testing.T) {
 	if _, err := New("secret").Review(context.Background(), "", ports.ReviewPayload{Stage: "review"}); err == nil {
 		t.Fatal("expected Jev generation to be rejected")
+	}
+}
+
+func TestReviewSendsOnlyEvidenceReferencedByCandidates(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request systemOneRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		state, ok := request.State.(map[string]any)
+		if !ok {
+			t.Fatalf("unexpected state type: %T", request.State)
+		}
+		files := state["changed_files"].([]any)
+		rules := state["rules"].([]any)
+		if len(files) != 1 || files[0].(map[string]any)["path"] != "kept.go" {
+			t.Fatalf("unexpected files sent to Jev: %#v", files)
+		}
+		if len(rules) != 2 || rules[0].(map[string]any)["rule_id"] != "GO-1" || rules[1].(map[string]any)["rule_id"] != "GO-2" {
+			t.Fatalf("unexpected rules sent to Jev: %#v", rules)
+		}
+		pullRequest := state["pull_request"].(map[string]any)
+		body, ok := pullRequest["body"].(string)
+		if !ok || !strings.HasSuffix(body, "…") || len([]rune(body)) != 2001 {
+			t.Fatalf("pull request body should be trimmed in Jev state: %#v", pullRequest)
+		}
+		_, _ = w.Write([]byte(`{"model":"jev-1.0","answers":{"candidate_0":{"type":"choice","choice":"accept","confidence":0.9}},"usage":{"input_tokens":10,"output_tokens":1}}`))
+	}))
+	defer server.Close()
+
+	payload := ports.ReviewPayload{
+		Stage:       "verification",
+		PullRequest: ports.PullRequest{Number: 4, Title: "Change", Body: strings.Repeat("large body", 300)},
+		ChangedFiles: []ports.ChangedFile{
+			{Path: "kept.go", Patch: "+bug"},
+			{Path: "unrelated.go", Patch: strings.Repeat("+large\n", 1000)},
+		},
+		Rules: []ports.ReviewRule{
+			{RuleID: "GO-1", Rule: "cited", Scopes: []string{"**/*.go"}},
+			{RuleID: "GO-2", Rule: "applicable but not cited", Scopes: []string{"**/*.go"}},
+			{RuleID: "JS-1", Rule: strings.Repeat("large", 1000), Scopes: []string{"**/*.js"}},
+		},
+		CandidateFindings: []ports.ModelFinding{{CandidateID: "candidate-1", RuleID: "GO-1", Path: "kept.go", Body: "bug"}},
+	}
+	if _, err := New("secret", WithBaseURL(server.URL), WithHTTPClient(server.Client())).Review(context.Background(), "policy", payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCompactVerificationRetainsRelatedEvidenceWithoutUnrelatedFiles(t *testing.T) {
+	payload := ports.ReviewPayload{
+		ReviewPolicy:      "repository policy",
+		ChangedFiles:      []ports.ChangedFile{{Path: "service.go"}, {Path: "handler.go"}, {Path: "unrelated.go"}},
+		CandidateFindings: []ports.ModelFinding{{CandidateID: "candidate-1", Path: "service.go"}},
+		ContextFiles: []ports.ContextFile{
+			{Path: "service.go", Revision: "HEAD", Content: "1: func ExecuteTask() {}"},
+			{Path: "handler.go", Revision: "HEAD", Content: "1: ExecuteTask()", RelatedTo: []string{"service.go"}},
+			{Path: "helpers.go", Revision: "HEAD", Content: "1: validate()", RelatedTo: []string{"service.go"}},
+			{Path: "old_service.go", Revision: "BASE", Content: "1: old guard", RelatedTo: []string{"service.go"}},
+			{Path: "unrelated.go", Revision: "HEAD", Content: "large unrelated code", RelatedTo: []string{"handler.go"}},
+		},
+	}
+	state := compactVerificationState("judge policy", payload)
+	files := state["changed_files"].([]ports.ChangedFile)
+	contextFiles := state["context_files"].([]ports.ContextFile)
+	if len(files) != 2 || files[1].Path != "handler.go" || len(contextFiles) != 4 {
+		t.Fatalf("lost related evidence or expanded transitively: %#v", state)
+	}
+	if state["review_policy"] != "repository policy" || state["verification_policy"] != "judge policy" {
+		t.Fatal("repository review policy was lost")
 	}
 }

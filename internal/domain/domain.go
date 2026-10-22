@@ -153,12 +153,26 @@ type ReviewAttempt struct {
 
 type ReviewHistoryEntry struct {
 	AttemptID, PullRequestNumber                                    int64
-	Repository, Provider, Model, Result, Error                      string
+	Repository, Provider, Model, VerificationModel, Result, Error   string
 	StartedAt                                                       time.Time
 	FinishedAt                                                      *time.Time
 	InputTokens, OutputTokens, CacheCreationTokens, CacheReadTokens int64
 	CostMicroUSD                                                    int64
+	VerificationInputTokens, VerificationOutputTokens               int64
+	VerificationCacheCreationTokens, VerificationCacheReadTokens    int64
+	VerificationCostMicroUSD                                        int64
 	FindingCount                                                    int
+}
+
+type ReviewRuleInput struct {
+	RuleID, Category, Title, Body, Scopes, ContentHash string
+}
+
+type ReviewDetail struct {
+	Review    ReviewHistoryEntry
+	Findings  []ReviewFinding
+	Decisions []VerificationDecision
+	Rules     []ReviewRuleInput
 }
 
 type DailyReviewMetric struct {

@@ -34,6 +34,9 @@ type ReviewStore interface {
 	RecordOwnComment(context.Context, domain.ReviewJob, domain.ReviewFinding, int64) error
 	CapturePrompt(context.Context, int64, domain.ReviewPrompt) error
 }
+type verificationUsageStore interface {
+	SaveVerificationUsage(context.Context, int64, string, int64, int64, int64, int64, int64) error
+}
 type PromptResolver interface {
 	Effective(context.Context, string) (domain.ReviewPrompt, error)
 	Validation(context.Context) (domain.ReviewPrompt, error)
@@ -59,6 +62,7 @@ type ReviewOptions struct {
 	RuleBaseURL                                          string
 	Categories                                           []string
 	MaxComments, MaxFiles, MaxFileBytes, MaxContextBytes int
+	MaxSourceContextBytes                                int
 }
 type ReviewResult struct {
 	JobID       int64                  `json:"job_id"`
@@ -107,6 +111,9 @@ func ProcessReviewJob(ctx context.Context, d ReviewDeps, o ReviewOptions, job do
 	return executeReview(ctx, d, o, job, pr, job.ID, false)
 }
 func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domain.ReviewJob, pr ports.PullRequest, jobID int64, dry bool) (ReviewResult, error) {
+	if o.MaxComments <= 0 {
+		o.MaxComments = 20
+	}
 	out := ReviewResult{JobID: jobID}
 	var check ports.CheckRun
 	fail := func(err error) (ReviewResult, error) {
@@ -146,23 +153,17 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 	}
 	for i := range files {
 		if files[i].Truncated {
-			if data, x := d.GitHub.ReadFileAtSHA(ctx, o.Repository, files[i].Path, pr.HeadSHA); x == nil {
-				if o.MaxFileBytes > 0 && len(data) > o.MaxFileBytes {
-					limitations = append(limitations, "context truncated for "+files[i].Path)
-				} else {
-					files[i].Patch = string(data)
-				}
-			} else {
-				limitations = append(limitations, "diff unavailable for "+files[i].Path)
-			}
+			limitations = append(limitations, "diff unavailable for "+files[i].Path)
 		}
-		contextBytes += len(files[i].Patch)
-		if o.MaxContextBytes > 0 && contextBytes > o.MaxContextBytes {
+		if o.MaxContextBytes > 0 && contextBytes+len(files[i].Patch) > o.MaxContextBytes {
 			files = files[:i]
 			limitations = append(limitations, "context byte limit reached; review is incomplete")
 			break
 		}
+		contextBytes += len(files[i].Patch)
 	}
+	sourceContext, contextLimitations := collectReviewContext(ctx, d.GitHub, o, pr, files, contextBytes)
+	limitations = append(limitations, contextLimitations...)
 	rules, e := d.Store.Rules(ctx, o.Repository)
 	if e != nil {
 		return fail(e)
@@ -192,7 +193,7 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 			}
 			attemptModel = strings.Join(names, ",")
 		}
-		attempt, e = d.Store.StartAttempt(ctx, jobID, d.Provider, attemptModel, "review-v1")
+		attempt, e = d.Store.StartAttempt(ctx, jobID, d.Provider, attemptModel, "review-v2")
 		if e != nil {
 			return fail(e)
 		}
@@ -200,7 +201,7 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 			return fail(e)
 		}
 	}
-	payload := ports.ReviewPayload{Repository: o.Repository, PullRequest: pr, SelectedCategories: o.Categories, Rules: rules, ChangedFiles: files, ContextFiles: map[string]string{}, Limitations: limitations, MaxFindings: o.MaxComments, Stage: "review"}
+	payload := ports.ReviewPayload{Repository: o.Repository, PullRequest: pr, SelectedCategories: o.Categories, Rules: rules, ChangedFiles: files, ContextFiles: sourceContext, Limitations: limitations, MaxFindings: o.MaxComments, Stage: "review"}
 	generationModels := d.GenerationModels
 	if len(generationModels) == 0 {
 		generationModels = []GenerationModel{{Name: d.ModelName, Model: d.Model}}
@@ -222,6 +223,7 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 	if candidateCount > 0 {
 		verificationPayload := payload
 		verificationPayload.Stage = "verification"
+		verificationPayload.ReviewPolicy = prompt.Revision.Text
 		verificationPayload.CandidateFindings = mr.Findings
 		validationPrompt, validationErr := d.Prompts.Validation(ctx)
 		if validationErr != nil {
@@ -246,7 +248,15 @@ func executeReview(ctx context.Context, d ReviewDeps, o ReviewOptions, job domai
 		if verificationModelName == "" {
 			verificationModelName = d.ModelName
 		}
-		costMicroUSD += reviewCostMicroUSD(verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens)
+		verificationCostMicroUSD := reviewCostMicroUSD(verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens)
+		costMicroUSD += verificationCostMicroUSD
+		if attempt > 0 {
+			if usageStore, ok := d.Store.(verificationUsageStore); ok {
+				if usageErr := usageStore.SaveVerificationUsage(ctx, attempt, verificationModelName, verified.InputTokens, verified.OutputTokens, verified.CacheCreationTokens, verified.CacheReadTokens, verificationCostMicroUSD); usageErr != nil {
+					slog.WarnContext(ctx, "could not save verification usage", "attempt_id", attempt, "error", usageErr)
+				}
+			}
+		}
 		verifiedFindings, decisions, verificationErr := selectVerifiedFindings(mr.Findings, verified.Findings)
 		if verificationErr != nil {
 			if attempt > 0 {
@@ -351,12 +361,26 @@ func generateReviewCandidates(ctx context.Context, models []GenerationModel, pro
 	}
 	results := make([]ports.ReviewModelResult, len(models))
 	errs := make([]error, len(models))
+	// One shared candidate budget, rather than MaxFindings for every agent.
+	budget := max(len(models), min(40, max(8, payload.MaxFindings)))
 	var wg sync.WaitGroup
 	for i := range results {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
-			results[index], errs[index] = models[index].Model.Review(ctx, prompt, payload)
+			agentPayload := payload
+			agentPayload.ReviewFocus = generationFocus(index, len(models))
+			agentPayload.MaxFindings = budget / len(models)
+			if index < budget%len(models) {
+				agentPayload.MaxFindings++
+			}
+			results[index], errs[index] = models[index].Model.Review(ctx, prompt, agentPayload)
+			findings := rankedFindings(results[index].Findings)
+			if len(findings) > agentPayload.MaxFindings {
+				findings = findings[:agentPayload.MaxFindings]
+				results[index].Limitations = append(results[index].Limitations, "generation candidate budget reached")
+			}
+			results[index].Findings = findings
 		}(i)
 	}
 	wg.Wait()
@@ -380,6 +404,31 @@ func generateReviewCandidates(ctx context.Context, models []GenerationModel, pro
 	return out, cost, nil
 }
 
+func generationFocus(index, count int) string {
+	if count == 1 {
+		return "Check changed logic, removed guards/invariants, and caller/callee contracts. Before returning, make one final pass for an overlooked regression."
+	}
+	focuses := []string{
+		"Audit changed logic and deleted/replaced behavior: identify removed guards, validation, error paths and invariants not restored by the new code.",
+		"Trace caller/callee contracts using the supplied source context: changed preconditions, return shapes, ordering and error handling. Identify concrete cross-file regressions.",
+		"Check language/framework pitfalls, security boundaries, concurrency and partial failures. Require a reachable trigger and concrete impact.",
+		"Check applicable catalog rules and exceptions, existing helpers, and redundant work. Report only concrete technical impact, not stylistic cleanup.",
+	}
+	return focuses[index%len(focuses)] + " Before returning, check once for an overlooked issue within this focus."
+}
+
+func rankedFindings(in []ports.ModelFinding) []ports.ModelFinding {
+	out := append([]ports.ModelFinding(nil), in...)
+	severity := map[string]int{"high": 3, "medium": 2, "low": 1}
+	sort.SliceStable(out, func(i, j int) bool {
+		if a, b := severity[out[i].Severity], severity[out[j].Severity]; a != b {
+			return a > b
+		}
+		return out[i].Confidence > out[j].Confidence
+	})
+	return out
+}
+
 type tokenRatesMicroUSD struct {
 	Input, Output, CacheCreation, CacheRead float64
 }
@@ -390,9 +439,9 @@ var reviewTokenRates = map[string]tokenRatesMicroUSD{
 	"sonnet":    {Input: 2, Output: 10, CacheCreation: 2.5, CacheRead: 0.1},
 	"opus":      {Input: 4, Output: 20, CacheCreation: 5, CacheRead: 0.2},
 	"haiku_max": {Input: 0.1, Output: 0.5, CacheCreation: 0.125, CacheRead: 0.01},
-	// Jev billing is not token-priced like the generative models. Do not
-	// misreport its decisions at the Sonnet fallback rate.
-	"jev": {},
+	// TypeSafe lists Jev at $0.042 per million input tokens; output is free.
+	// https://typesafe.ai/
+	"jev": {Input: 0.042},
 }
 
 func reviewCostMicroUSD(model string, input, output, cacheCreation, cacheRead int64) int64 {
@@ -636,7 +685,6 @@ func validateFindingsObserved(in []ports.ModelFinding, rules []ports.ReviewRule,
 		patches[f.Path] = changedLines(f.Patch)
 	}
 	seen := map[string]bool{}
-	seenLocation := map[string]bool{}
 	var out []ports.ModelFinding
 	var rejected []string
 	reject := func(f ports.ModelFinding, reason, limitation string) {
@@ -647,7 +695,8 @@ func validateFindingsObserved(in []ports.ModelFinding, rules []ports.ReviewRule,
 			observe(f, reason)
 		}
 	}
-	for i, f := range in {
+	ordered := rankedFindings(in)
+	for _, f := range ordered {
 		if firstFindingParagraph(f.Body) == "" {
 			reject(f, "empty_body", "ignored finding without an actionable body")
 			continue
@@ -681,34 +730,29 @@ func validateFindingsObserved(in []ports.ModelFinding, rules []ports.ReviewRule,
 		if f.Side == "" {
 			f.Side = "RIGHT"
 		}
+		key := fmt.Sprintf("%s|%s|%d|%s", f.RuleID, f.Path, f.Line, strings.ToLower(strings.TrimSpace(f.Body)))
 		if f.Path != "" {
 			lines, ok := patches[f.Path]
 			if !ok || !lines[f.Line] {
-				rejected = append(rejected, fmt.Sprintf("published %s:%d as a general comment because the line is not commentable", f.Path, f.Line))
+				rejected = append(rejected, fmt.Sprintf("line %s:%d is not commentable; finding requires a general comment", f.Path, f.Line))
 				f.Path, f.Line, f.Side = "", 0, ""
 			}
 		}
-		key := fmt.Sprintf("%s|%s|%d|%s", f.RuleID, f.Path, f.Line, strings.ToLower(strings.TrimSpace(f.Body)))
 		if seen[key] {
 			reject(f, "duplicate_finding", "")
 			continue
 		}
-		if f.Path != "" && f.Line > 0 {
-			location := fmt.Sprintf("%s:%d", f.Path, f.Line)
-			if seenLocation[location] {
-				reject(f, "duplicate_location", "ignored an additional finding on "+location+" to avoid duplicate review threads")
-				continue
-			}
-			seenLocation[location] = true
-		}
 		seen[key] = true
 		out = append(out, f)
-		if len(out) >= max {
-			for _, remaining := range in[i+1:] {
-				reject(remaining, "max_findings_reached", "")
-			}
-			break
+	}
+	if max <= 0 {
+		max = 20
+	}
+	if len(out) > max {
+		for _, remaining := range out[max:] {
+			reject(remaining, "max_findings_reached", "")
 		}
+		out = out[:max]
 	}
 	return out, rejected
 }
@@ -767,5 +811,4 @@ func toFinding(attempt int64, f ports.ModelFinding) domain.ReviewFinding {
 }
 
 var _ = json.Marshal
-var _ = sort.Strings
 var _ = time.Now

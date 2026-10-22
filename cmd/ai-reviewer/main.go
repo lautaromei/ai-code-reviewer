@@ -88,7 +88,6 @@ func run(args []string, out, errout io.Writer) int {
 		}
 		mux := http.NewServeMux()
 		mux.Handle("/webhooks/github", &webhook.Handler{Secret: []byte(secret), MaxBody: cfg.Webhook.MaxBodyBytes, DB: store})
-		mux.Handle("/rules/", webhook.RulePages(sqlite.NewRuleCatalog(db)))
 		mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(200); _, _ = w.Write([]byte("ok")) })
 		installURL := fmt.Sprintf("https://%s/apps/%s/installations/new", cfg.GitHub.Hostname, cfg.GitHub.AppSlug)
 		var installationChecker interface {
@@ -97,7 +96,15 @@ func run(args []string, out, errout io.Writer) int {
 		if cfg.GitHub.Auth == "app" {
 			installationChecker = store
 		}
-		mux.Handle("/", webui.NewAdminWithInstallations(sqlite.NewRuleCatalog(db), sqlite.NewPromptStore(db), store, installationChecker, installURL))
+		admin := http.NewServeMux()
+		admin.Handle("/rules/", webhook.RulePages(sqlite.NewRuleCatalog(db)))
+		admin.Handle("/", webui.NewAdminWithInstallations(sqlite.NewRuleCatalog(db), sqlite.NewPromptStore(db), store, installationChecker, installURL))
+		authenticatedAdmin, authErr := webui.WithAdminLoginFromEnvironment(admin)
+		if authErr != nil {
+			fmt.Fprintln(errout, authErr)
+			return 1
+		}
+		mux.Handle("/", authenticatedAdmin)
 		srv := &http.Server{Addr: cfg.Webhook.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 		fmt.Fprintf(out, "webhook listening on %s\n", cfg.Webhook.Listen)
 		if e = srv.ListenAndServe(); e != nil && e != http.ErrServerClosed {
@@ -154,7 +161,7 @@ func run(args []string, out, errout io.Writer) int {
 	if cfg.GitHub.Auth == "app" {
 		deps.Checks = gh
 	}
-	res, e := application.ReviewPullRequest(ctx, deps, application.ReviewOptions{Repository: *repo, PullRequest: *pr, DryRun: *dry, RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes})
+	res, e := application.ReviewPullRequest(ctx, deps, application.ReviewOptions{Repository: *repo, PullRequest: *pr, DryRun: *dry, RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes, MaxSourceContextBytes: cfg.Review.MaxSourceContextBytes})
 	_ = json.NewEncoder(out).Encode(res)
 	if e != nil {
 		fmt.Fprintln(errout, e)
@@ -215,7 +222,7 @@ func reviewWorker(ctx context.Context, owner string, store *sqlite.ReviewStore, 
 						jobDeps.GenerationModels, e = buildGenerationModels(cfg, generationModelNames)
 					}
 					if e == nil {
-						_, e = application.ProcessReviewJob(ctx, jobDeps, application.ReviewOptions{RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes}, job)
+						_, e = application.ProcessReviewJob(ctx, jobDeps, application.ReviewOptions{RuleBaseURL: cfg.Webhook.PublicURL, Categories: r.Categories, MaxComments: cfg.Review.MaxComments, MaxFiles: cfg.Review.MaxFiles, MaxFileBytes: cfg.Review.MaxFileBytes, MaxContextBytes: cfg.Review.MaxContextBytes, MaxSourceContextBytes: cfg.Review.MaxSourceContextBytes}, job)
 					}
 				}
 			}

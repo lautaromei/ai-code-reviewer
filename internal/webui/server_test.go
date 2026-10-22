@@ -36,6 +36,9 @@ func (s *repositorySettingsStore) SaveGlobalReviewModels(_ context.Context, mode
 func (s *repositorySettingsStore) ListReviewHistory(context.Context, int) ([]domain.ReviewHistoryEntry, error) {
 	return nil, nil
 }
+func (s *repositorySettingsStore) ReviewDetail(_ context.Context, id int64) (domain.ReviewDetail, bool, error) {
+	return domain.ReviewDetail{Review: domain.ReviewHistoryEntry{AttemptID: id}}, true, nil
+}
 func (s *repositorySettingsStore) DashboardMetrics(context.Context) (domain.DashboardMetrics, error) {
 	return s.metrics, nil
 }
@@ -185,10 +188,30 @@ func TestJevIsAvailableOnlyAsVerificationModelFromWeb(t *testing.T) {
 func TestIndexContainsAdministrationTabs(t *testing.T) {
 	r := httptest.NewRecorder()
 	New(&catalog{}, nil).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
-	for _, label := range []string{"Repositorios", "Prompt general", "Prompts por repositorio"} {
+	for _, label := range []string{"Repositories", "Global prompt", "Repository prompts"} {
 		if !strings.Contains(r.Body.String(), label) {
 			t.Fatalf("missing tab %q", label)
 		}
+	}
+}
+
+func TestIndexIncludesPersistentDarkThemeToggle(t *testing.T) {
+	r := httptest.NewRecorder()
+	New(&catalog{}, nil).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := r.Body.String()
+	for _, marker := range []string{`id="theme-toggle"`, `data-theme="dark"`, `localStorage.setItem('ai-reviewer-theme'`} {
+		if !strings.Contains(body, marker) {
+			t.Fatalf("missing dark theme marker %q", marker)
+		}
+	}
+}
+
+func TestIndexHandlesEmptyAPISuccessResponses(t *testing.T) {
+	r := httptest.NewRecorder()
+	New(&catalog{}, nil).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
+	body := r.Body.String()
+	if !strings.Contains(body, "body=await r.text()") || strings.Contains(body, "await r.json()") {
+		t.Fatal("API helper must read an empty 204 response body only once")
 	}
 }
 
@@ -196,10 +219,10 @@ func TestModelPanelUsesPerAgentSelectorsWithoutRedundantDefault(t *testing.T) {
 	r := httptest.NewRecorder()
 	New(&catalog{}, nil).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/", nil))
 	body := r.Body.String()
-	if strings.Contains(body, "Modelo predeterminado") || strings.Contains(body, `id="global-model"`) {
+	if strings.Contains(body, "Default model") || strings.Contains(body, `id="global-model"`) {
 		t.Fatalf("model panel still exposes the redundant default selector")
 	}
-	if !strings.Contains(body, "Agentes de generación") || !strings.Contains(body, "Modelo juez") {
+	if !strings.Contains(body, "Generation agents") || !strings.Contains(body, "Judge model") {
 		t.Fatalf("model panel is missing effective model selectors")
 	}
 }
@@ -210,5 +233,22 @@ func TestDashboardMetricsAreExposed(t *testing.T) {
 	NewAdmin(&catalog{}, nil, repos).ServeHTTP(r, httptest.NewRequest(http.MethodGet, "/api/dashboard", nil))
 	if r.Code != http.StatusOK || !strings.Contains(r.Body.String(), `"ReviewsToday":3`) || !strings.Contains(r.Body.String(), `"CostTodayMicroUSD":125000`) {
 		t.Fatalf("status=%d response=%s", r.Code, r.Body.String())
+	}
+}
+
+func TestReviewDetailPageAndAPIAreExposed(t *testing.T) {
+	repos := &repositorySettingsStore{}
+	handler := NewAdmin(&catalog{}, nil, repos)
+
+	page := httptest.NewRecorder()
+	handler.ServeHTTP(page, httptest.NewRequest(http.MethodGet, "/reviews/42", nil))
+	if page.Code != http.StatusOK || !strings.Contains(page.Body.String(), "loadReviewDetail") {
+		t.Fatalf("detail page status=%d", page.Code)
+	}
+
+	api := httptest.NewRecorder()
+	handler.ServeHTTP(api, httptest.NewRequest(http.MethodGet, "/api/reviews/42", nil))
+	if api.Code != http.StatusOK || !strings.Contains(api.Body.String(), `"AttemptID":42`) {
+		t.Fatalf("detail API status=%d response=%s", api.Code, api.Body.String())
 	}
 }
